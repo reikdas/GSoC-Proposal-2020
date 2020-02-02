@@ -15,7 +15,6 @@ void awkward_listarray_compact_offsets(T* tooffsets, const C* fromstarts, const 
 			tooffsets[idx + 1] = tooffsets[idx] + (stop - start);
 		}
 	}
-	__syncthreads();
 }
 
 int main() {
@@ -30,7 +29,7 @@ int main() {
 	cudaMalloc((void**)&d_fromstops, 5 * sizeof(int));
 	cudaMemcpy(d_fromstops, fromstops, 5 * sizeof(int), cudaMemcpyHostToDevice);
 	awkward_listarray_compact_offsets <int, int><<<1, 5>>> (d_tooffsets, d_fromstarts, d_fromstops, 0, 0, 5);
-	cudaDeviceSynchronize();
+	//cudaDeviceSynchronize();
 	cudaMemcpy(tooffsets, d_tooffsets, 6 * sizeof(int), cudaMemcpyDeviceToHost);
 	cudaFree(d_tooffsets);
 	cudaFree(d_fromstarts);

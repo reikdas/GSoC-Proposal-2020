@@ -33,3 +33,8 @@
 
 # IDE
 .vs/
+
+# Visual Studio directory
+x64/
+testgsoc/x64/
+testgsoc/testgsoc*
