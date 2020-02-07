@@ -4,11 +4,11 @@
 #include <cuda_runtime.h>
 #include "device_launch_parameters.h"
 
-template <typename T>
-void prefix_sum(T* output, const T* arr, const T* arr2, const int size) {
-  thrust::device_vector<T> d_arr(arr, arr + size);
-  thrust::device_vector<T> d_arr2(arr2, arr2 + size);
-  thrust::device_vector<T> data(size);
+template <typename T, typename C>
+void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, int64_t stopsoffset, int64_t length) {
+  thrust::device_vector<C> d_arr(arr + startsoffset, arr + startsoffset + length);
+  thrust::device_vector<C> d_arr2(arr2 + stopsoffset, arr2 + stopsoffset + length);
+  thrust::device_vector<C> data(length);
   thrust::transform(d_arr2.begin(), d_arr2.end(), d_arr.begin(), data.begin(), thrust::minus<T>());
   thrust::device_vector<T> temp(data.size() + 1);
   thrust::exclusive_scan(data.begin(), data.end(), temp.begin());
@@ -23,7 +23,7 @@ int main() {
     starter[i] = i;
     stopper[i] = i + 1;
   }
-  prefix_sum<int>(output, starter, stopper, size);
+  prefix_sum<int, int>(output, starter, stopper, 0, 0, size);
   for (int i = 0; i < size + 1; i++) {
     std::cout << output[i] << "\n";
   }
