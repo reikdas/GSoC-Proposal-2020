@@ -5,16 +5,18 @@
 template <typename C, typename T>
 __global__
 void awkward_listarray_compact_offsets(T* tooffsets, const C* fromstarts, const C* fromstops, int64_t startsoffset, int64_t stopsoffset, int64_t length) {
-	tooffsets[0] = 0;
-	int i = threadIdx.x + (blockIdx.x * blockDim.x);
-	if (i == 0) {
-		for (int idx = 0; idx < length; idx++) {
-			C start = fromstarts[startsoffset + idx];
-			C stop = fromstops[stopsoffset + idx];
-			assert(start < stop);
-			tooffsets[idx + 1] = tooffsets[idx] + (stop - start);
-		}
-	}
+	int idx = threadIdx.x + (blockIdx.x * blockDim.x);
+  if (idx == 0) tooffsets[0] = 0;
+  if (idx < length) {
+    if (idx == 0) {
+      for (int i = 0; i < length; i++) {
+        C start = fromstarts[startsoffset + i];
+        C stop = fromstops[stopsoffset + i];
+        assert(start < stop);
+        tooffsets[i + 1] = tooffsets[i] + (stop - start);
+      }
+    }
+  }
 }
 
 template <typename T, typename C>
@@ -43,7 +45,7 @@ void offload(T* tooffsets, const C* fromstarts, const C* fromstops, int64_t star
 }
 
 int main() {
-  const int size = 70000;
+  const int size = 10;
   int tooffsets[size + 1], fromstarts[size], fromstops[size];
   for (int i = 0; i < size; i++) {
     fromstarts[i] = i;
