@@ -3,17 +3,48 @@
 #include <thrust/scan.h>
 #include <cuda_runtime.h>
 #include "device_launch_parameters.h"
+#include <assert.h>
+
+template <typename T, typename C>
+__global__
+void sub(T* output, const C* starter, const C* stopper, int64_t startsoffset, int64_t stopsoffset, int64_t n) {
+  int thid = threadIdx.x + blockIdx.x * blockDim.x;
+  if (thid < n) {
+    C start = starter[thid + startsoffset];
+    C stop = stopper[thid + stopsoffset];
+    assert(start < stop);
+    output[thid] = stop - start;
+  }
+}
 
 template <typename T, typename C>
 void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, int64_t stopsoffset, int64_t length) {
-  thrust::device_vector<C> d_arr(arr + startsoffset, arr + startsoffset + length);
-  thrust::device_vector<C> d_arr2(arr2 + stopsoffset, arr2 + stopsoffset + length);
-  thrust::device_vector<C> data(length);
-  thrust::transform(d_arr2.begin(), d_arr2.end(), d_arr.begin(), data.begin(), thrust::minus<T>());
+  int block, thread;
+  if (length > 1024) {
+    block = (length / 1024) + 1;
+    thread = 1024;
+  }
+  else {
+    thread = length;
+    block = 1;
+  }
+  T* d_output;
+  C* d_arr, * d_arr2;
+  cudaMalloc((void**)&d_output, length * sizeof(T));
+  cudaMalloc((void**)&d_arr, length * sizeof(C));
+  cudaMemcpy(d_arr, arr, length * sizeof(C), cudaMemcpyHostToDevice);
+  cudaMalloc((void**)&d_arr2, length * sizeof(C));
+  cudaMemcpy(d_arr2, arr2, length * sizeof(C), cudaMemcpyHostToDevice);
+  sub<T, C> << <block, thread >> > (d_output, d_arr, d_arr2, startsoffset, stopsoffset, length);
+  cudaDeviceSynchronize();
+  thrust::device_vector<T> data(d_output, d_output+length);
   thrust::device_vector<T> temp(data.size() + 1);
   thrust::exclusive_scan(data.begin(), data.end(), temp.begin());
   temp[data.size()] = data.back() + temp[data.size() - 1];
   thrust::copy(temp.begin(), temp.end(), output);
+  cudaFree(d_output);
+  cudaFree(d_arr);
+  cudaFree(d_arr2);
 }
 
 int main() {
