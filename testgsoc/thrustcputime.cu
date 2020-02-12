@@ -13,7 +13,7 @@ void sub(T* output, const C* starter, const C* stopper, int64_t startsoffset, in
   if (thid < n) {
     C start = starter[thid + startsoffset];
     C stop = stopper[thid + stopsoffset];
-    assert(start =< stop);
+    assert(start <= stop);
     output[thid] = stop - start;
   }
 }
@@ -36,7 +36,7 @@ void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, in
   cudaMemcpy(d_arr, arr, length * sizeof(C), cudaMemcpyHostToDevice);
   cudaMalloc((void**)&d_arr2, length * sizeof(C));
   cudaMemcpy(d_arr2, arr2, length * sizeof(C), cudaMemcpyHostToDevice);
-  sub<T, C> << <block, thread >> > (d_output, d_arr, d_arr2, startsoffset, stopsoffset, length);
+  sub<T, C> <<<block, thread>>>(d_output, d_arr, d_arr2, startsoffset, stopsoffset, length);
   cudaDeviceSynchronize();
   thrust::device_vector<T> data(d_output, d_output + length);
   thrust::device_vector<T> temp(data.size() + 1);
@@ -54,13 +54,13 @@ void foo(T* tooffsets, const C* fromstarts, const C* fromstops, int64_t startsof
   for (int64_t i = 0; i < length; i++) {
     C start = fromstarts[startsoffset + i];
     C stop = fromstops[stopsoffset + i];
-    assert(start =< stop);
+    assert(start <= stop);
     tooffsets[i + 1] = tooffsets[i] + (stop - start);
   }
 }
 
 int main() {
-  int const size = 70000;
+  int const size = 600000;
   int starter[size], stopper[size], output[size + 1];
   for (int i = 0; i < size; i++) {
     starter[i] = i;
@@ -79,4 +79,5 @@ int main() {
   auto stop2 = std::chrono::high_resolution_clock::now();
   auto time2 = std::chrono::duration_cast<std::chrono::microseconds>(stop2 - start2);
   std::cout << "Time taken for CPU = " << time2.count() << "\n";
+  return 0;
 }
