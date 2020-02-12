@@ -12,7 +12,7 @@ void sub(T* output, const C* starter, const C* stopper, int64_t startsoffset, in
   if (thid < n) {
     C start = starter[thid + startsoffset];
     C stop = stopper[thid + stopsoffset];
-    assert(start < stop);
+    assert(start <= stop);
     output[thid] = stop - start;
   }
 }
@@ -35,7 +35,7 @@ void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, in
   cudaMemcpy(d_arr, arr, length * sizeof(C), cudaMemcpyHostToDevice);
   cudaMalloc((void**)&d_arr2, length * sizeof(C));
   cudaMemcpy(d_arr2, arr2, length * sizeof(C), cudaMemcpyHostToDevice);
-  sub<T, C> << <block, thread >> > (d_output, d_arr, d_arr2, startsoffset, stopsoffset, length);
+  sub<T, C><<<block, thread>>>(d_output, d_arr, d_arr2, startsoffset, stopsoffset, length);
   cudaDeviceSynchronize();
   thrust::device_vector<T> data(d_output, d_output+length);
   thrust::device_vector<T> temp(data.size() + 1);
@@ -48,13 +48,14 @@ void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, in
 }
 
 int main() {
-  int const size = 70000;
+  int const size = 80000;
   int starter[size], stopper[size], output[size + 1];
   for (int i = 0; i < size; i++) {
     starter[i] = i;
     stopper[i] = i + 1;
   }
   prefix_sum<int, int>(output, starter, stopper, 0, 0, size);
+  cudaDeviceSynchronize();
   for (int i = 0; i < size + 1; i++) {
     std::cout << output[i] << "\n";
   }
