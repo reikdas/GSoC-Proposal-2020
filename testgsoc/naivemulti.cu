@@ -38,7 +38,7 @@ void offload(T* tooffsets, const C* fromstarts, const C* fromstops, int64_t star
     thread = length;
     block = 1;
   }
-  awkward_listarray_compact_offsets <int, int> << <block,  thread>> > (d_tooffsets, d_fromstarts, d_fromstops, startsoffset, stopsoffset, length);
+  awkward_listarray_compact_offsets <int, int><<<block, thread>>>(d_tooffsets, d_fromstarts, d_fromstops, startsoffset, stopsoffset, length);
   cudaDeviceSynchronize();
   cudaMemcpy(tooffsets, d_tooffsets, (length + 1) * sizeof(int), cudaMemcpyDeviceToHost);
   cudaFree(d_tooffsets);
@@ -54,8 +54,8 @@ int main() {
     fromstops[i] = i + 10;
   }
   offload<int, int>(tooffsets, fromstarts, fromstops, 0, 0, size);
-	for (int i = 0; i < size + 1; i++) {
-		std::cout << tooffsets[i] << "\n";
-	}
-	return 0;
+  for (int i = 0; i < size + 1; i++) {
+	std::cout << tooffsets[i] << "\n";
+  }
+  return 0;
 }

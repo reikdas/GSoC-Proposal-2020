@@ -48,7 +48,7 @@ void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, in
 }
 
 int main() {
-  int const size = 80000;
+  int const size = 100000;
   int starter[size], stopper[size], output[size + 1];
   for (int i = 0; i < size; i++) {
     starter[i] = i;
