@@ -39,3 +39,10 @@ x64/
 testgsoc/x64/
 testgsoc/testgsoc*
 testgsoc.sln
+
+# TeX
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.synctex.gz

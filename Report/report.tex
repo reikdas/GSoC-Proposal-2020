@@ -1,0 +1,34 @@
+\documentclass{article}
+
+\usepackage{listings}
+\usepackage{minted}
+
+\title{Evaluation task for Awkward Array GSoC project}
+\author{Pratyush Das$^1$}
+% https://tex.stackexchange.com/a/315873/193728
+\date{%
+    $^1$Institute of Engineering \& Management, Kolkata\\%
+}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+
+    In this report, we demonstrate a sample GPU kernel designed to be an alternative to the CPU backend for array operations in the Awkward Array project. In particular, we implement a CUDA translation of the \textit{awkward\_listarray\_compact\_offsets} CPU kernel, and show how parallelizing the code on a GPU could significantly increase the speed of computation.
+
+\end{abstract}
+
+\section{Introduction}
+
+The sample CPU kernel (directly taken from the Awkward Array codebase) to be translated is defined below -
+\lstinputlisting[breaklines]{../testgsoc/cpukernel.c}
+Translating this particular CPU kernel serves as good test because parallelizing this CPU kernel involves overcoming the loop carried dependency in the above code -
+\begin{lstlisting}
+tooffsets[i + 1] = tooffsets[i] + (stop - start);
+\end{lstlisting}
+where \textit{tooffsets[i + 1]} depends on \textit{toffsets[i]}.
+
+\end{document}
+
