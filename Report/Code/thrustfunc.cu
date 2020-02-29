@@ -1,24 +1,46 @@
-#include <iostream>
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
-#include <cuda_runtime.h>
-#include "device_launch_parameters.h"
 #include "helper_cuda.h"
+
+__device__
+void success_cuda(Error* err) {
+  err.str = nullptr;
+  err.identity = kSliceNone;
+  err.attempt = kSliceNone;
+  err.extra = 0;
+}
+
+__device__
+void failure_cuda(const char* str, int64_t identity, int64_t attempt, Error* err) {
+  err.str = str;
+  err.identity = identity;
+  err.attempt = attempt;
+  err.extra = 0;
+}
 
 template <typename T, typename C>
 __global__
-void sub(T* output, const C* starter, const C* stopper, int64_t startsoffset, int64_t stopsoffset, int64_t n) {
+void sub(T* output, const C* starter, const C* stopper, int64_t startsoffset, int64_t stopsoffset, int64_t n, Error* err) {
+  __shared__ int flag[1];
   int thid = threadIdx.x + blockIdx.x * blockDim.x;
+  if (thid == 0) flag[0] = 0;
   if (thid < n) {
     C start = starter[thid + startsoffset];
     C stop = stopper[thid + stopsoffset];
-    assert(start <= stop);
+    if (stop < start) {
+      failure_cuda("stops[i] < starts[i]", thid , kSliceNone, err);
+      flag[0] = 1;
+    }
     output[thid] = stop - start;
+  }
+  __syncthreads();
+  if (flag[0] != 1) {
+    success_cuda(err);
   }
 }
 
 template <typename T, typename C>
-void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, int64_t stopsoffset, int64_t length) {
+void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, int64_t stopsoffset, int64_t length, Error* err) {
   int block, thread;
   if (length > 1024) {
     block = (length / 1024) + 1;
@@ -35,7 +57,7 @@ void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, in
   checkCudaErrors(cudaMemcpy(d_arr, arr, length * sizeof(C), cudaMemcpyHostToDevice));
   checkCudaErrors(cudaMalloc((void**)&d_arr2, length * sizeof(C)));
   checkCudaErrors(cudaMemcpy(d_arr2, arr2, length * sizeof(C), cudaMemcpyHostToDevice));
-  sub<T, C><<<block, thread>>>(d_output, d_arr, d_arr2, startsoffset, stopsoffset, length);
+  sub<T, C><<<block, thread>>>(d_output, d_arr, d_arr2, startsoffset, stopsoffset, length, err);
   checkCudaErrors(cudaDeviceSynchronize());
   thrust::device_vector<T> data(d_output, d_output+length);
   thrust::device_vector<T> temp(data.size() + 1);
@@ -45,18 +67,4 @@ void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, in
   checkCudaErrors(cudaFree(d_output));
   checkCudaErrors(cudaFree(d_arr));
   checkCudaErrors(cudaFree(d_arr2));
-}
-
-int main() {
-  int const size = 100000;
-  int starter[size], stopper[size], output[size + 1];
-  for (int i = 0; i < size; i++) {
-    starter[i] = i;
-    stopper[i] = i + 1;
-  }
-  prefix_sum<int, int>(output, starter, stopper, 0, 0, size);
-  cudaDeviceSynchronize();
-  for (int i = 0; i < size + 1; i++) {
-    std::cout << output[i] << "\n";
-  }
 }

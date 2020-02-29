@@ -46,3 +46,4 @@ testgsoc.sln
 *.fls
 *.log
 *.synctex.gz
+*_minted-*
