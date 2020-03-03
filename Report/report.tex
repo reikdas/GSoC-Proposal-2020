@@ -33,7 +33,7 @@
 
 \begin{abstract}
 
-    In this report, we demonstrate a sample GPU kernel designed to be an alternative to the CPU backend for array operations in the Awkward Array project. In particular, we implement a CUDA translation of the \textit{awkward\_listarray\_compact\_offsets} CPU kernel, and show how parallelizing the code on a GPU could significantly increase the speed of computation. The motivation of this report is to serve as an evaluation task to qualify to work on the project titled ``Awkward Array GPU kernels" under the mentorship of Jim Pivarski and David Lange.
+    In this report, we demonstrate a sample GPU kernel designed to be an alternative to the CPU backend for array operations in the Awkward Array project. In particular, we implement a CUDA translation of the \textit{awkward\_listarray\_compact\_offsets} CPU kernel, and show how parallelizing the code on a GPU could significantly increase the speed of computation. The motivation of this report is to serve as an evaluation to enable me to qualify to work on the project titled ``Awkward Array GPU kernels" under the mentorship of Jim Pivarski and David Lange.
 
 \end{abstract}
 
@@ -51,6 +51,7 @@ tooffsets[i + 1] = tooffsets[i] + (stop - start);
 \end{mdframed}
 where \mintinline{c}{tooffsets[i + 1]} depends on \mintinline{c}{toffsets[i]}.\\
 
+\pagebreak
 The above algorithm can be visualized to illustrate its linear nature -
 \begin{figure}[H]
 \includegraphics[width=\textwidth]{Graphics/cpu.PNG}
@@ -61,12 +62,12 @@ The above algorithm can be visualized to illustrate its linear nature -
 
 The evaluation task required creating a parallel algorithm as an alternative for the sequential CPU algorithm. There are several ways to do this -
 \begin{enumerate}
-\item OpenCL, which is a more uniform interface to write parallel algorithms to be executed on multiple backends, but is slower than CUDA and losing popularity.
-\item CUDA, which is an easier and more performant interface for executing parallel algorithms only on an NVIDIA GPU.
+    \item OpenCL \cite{opencl}, which is a more uniform interface to write parallel algorithms to be executed on multiple backends, but is slower than CUDA and losing popularity.
+    \item CUDA \cite{cuda}, which is an easier and more performant interface for executing parallel algorithms only on an NVIDIA GPU.
 \end{enumerate}
 Due to the availability of an NVIDIA GPU and performance requirements, we have decided to use CUDA to write and execute our parallel algorithms.
 \smallbreak
-\noindent We use some CUDA intrinsics like \mintinline{c}{thrust} in our sample code for the evaluation task which we might not use in the production code due to avoid locking the implementation to CUDA and allow expansion to newer interfaces in the future.
+\noindent We use some CUDA intrinsics like \mintinline{c}{thrust} \cite{thrust} in our sample code for the evaluation task which we might not use in the production code to avoid locking our parallel implementation to CUDA and allow expansion to newer interfaces in the future.
 
 \section{Sequential algorithm on an Nvidia GPU}
 
@@ -79,7 +80,7 @@ Due to the availability of an NVIDIA GPU and performance requirements, we have d
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
 \lstinputlisting[breaklines]{Code/naivesinglefunc.cu}
 \end{mdframed}
-In the above code block\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/naivesingle.cu}} we execute the algorithm only for a single GPU thread while the other threads sit idle.
+In the above code block\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/naivesingle.cu}} we execute the algorithm only for a single GPU thread (in a for loop) while the other threads sit idle.
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
 \begin{lstlisting}
     if (idx == 0) {
@@ -110,7 +111,7 @@ void failure_cuda(const char* str, int64_t identity,
 }
 \end{lstlisting}
 \end{mdframed}
-We use a flag implemented using shared memory and the CUDA intrinsic thread synchronization 
+We use a flag which has been implemented using shared memory and the CUDA intrinsic thread synchronization 
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
 \begin{lstlisting}
     __shared__ int flag[1];
@@ -132,12 +133,12 @@ to determine whether the \mintinline{c}{success_cuda()} call should be executed 
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
 \lstinputlisting[breaklines]{Code/naivemultifunc.cu}
 \end{mdframed}
-The sequential algorithm on multiple GPU threads implementation above\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/naivemultiblocks.cu}} differs only slightly from the sequential algorithm on single GPU threads implementation.
+The sequential algorithm on multiple GPU threads implementation shown above\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/naivemultiblocks.cu}} differs only slightly from the sequential algorithm on a single GPU thread implementation.
 \smallbreak
-\noindent The main difference is that the multiple GPU threads implementation has all the threads execute the algorithm one after another, instead of all at the same time. When one thread is being executed, the other threads sit idly, then the next thread is executed while the previous and all other threads sit idle.
+\noindent The main difference is that the multiple GPU threads implementation has all the threads execute the algorithm one after another (no loops), instead of all at the same time. When one thread is being executed, the other threads sit idly, then the next thread is executed while the previous and all other threads sit idle.
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
 \begin{lstlisting}
-    _for (int i = 0; i < length; i++) {
+    for (int i = 0; i < length; i++) {
       ...
       if (i == idx) {
         ... 
@@ -156,21 +157,50 @@ We use the CUDA intrinsic \mintinline{c}{__syncthreads()} before each iteration 
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
 \lstinputlisting[breaklines]{Code/thrustfunc.cu}
 \end{mdframed}
-The above code\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/thrust.cu}}
+The above code\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/thrust.cu}} is the final resulting code for the evaluation task. We implement the given CPU algorithm as a parallel GPU algorithm using CUDA.\\
+\noindent The CUDA kernel \mintinline{c}{sub} takes two arrays that reside on the GPU and returns a GPU array which stores the result of subtracting the value of the array at the position (indices + offset). We call \mintinline{c}{sub} from the function \mintinline{c}{prefix_sum} which also calls Thrust's exclusive scan \cite{scan} algorithm on the resulting device array to get the required result.
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
+\begin{lstlisting}
+    thrust::exclusive_scan(data.begin(), data.end(), temp.begin());
+\end{lstlisting}
+\end{mdframed}
+and since the problem in question is not exactly an exclusive scan where the last cumulative sum number is not calculated, we need an additional step to calculate the required result -
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
+\begin{lstlisting}
+    temp[data.size()] = data.back() + temp[data.size() - 1];
+\end{lstlisting}
+\end{mdframed}
+\noindent We calculate the number of blocks and threads required by the \mintinline{c}{sub} CUDA kernel by - 
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
+\begin{lstlisting}
+    if (length > 1024) {
+        block = (length / 1024) + 1;
+        thread = 1024;
+    }
+    else {
+        thread = length;
+        block = 1;
+    }
+\end{lstlisting}
+\end{mdframed}
+The prefix\_sum() function also has a lot of boilerplate code such as copying arrays from CPU to GPU, and back from the GPU to CPU whose execution time we do not take into consideration while benchmarking.\\
+\smallbreak
+\noindent Arguably CUB's \cite{cub} exclusive scan algorithm is more optimized than Thrust's exclusive scan algorithm, but since Thrust comes installed with the CUDA development toolkit, we have decided to use Thrust in our sample code.
 
+\pagebreak
 \section{Benchmarks}
 We have compared the performance of the various algorithms relative to each other\footnote{Benchmarking numbers: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/data.txt} generated using \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/plotter.py}}.
 \begin{figure}[H]
 \hfill\includegraphics[scale=0.5]{Graphics/naivegpucpu.png}\hspace*{\fill}
 \caption{Comparing performance of sequential GPU algorithms with CPU algorithm}
 \end{figure}
-We can see that the sequential algorithms on the GPU run much slower than the sequential algorithm on the CPU. This can be attributed to the inherent difference in the design of GPUs and CPUs. GPUs are designed to operate on independent data in parallel, whereas CPUs are optimized to execute a single stream of instructions as quickly as possible. So when we are executing a single instruction stream on the GPU, it is expected that the time for completion will be more than the time for completion of the same instructions on a CPU.
+We can see that the sequential algorithms on the GPU run much slower than the sequential algorithm on the CPU\footnote{We use an i7 8750H CPU for our tests}. This can be attributed to the inherent difference in the design of GPUs and CPUs. GPUs are designed to operate on independent data in parallel, whereas CPUs are optimized to execute a single stream of instructions as quickly as possible. So when we are executing a single instruction stream on the GPU, it is expected that the time for completion will be more than the time for completion of the same instructions on a CPU.
 
 \begin{figure}[H]
 \hfill\includegraphics[scale=0.5]{Graphics/gpucomp.png}\hspace*{\fill}
 \caption{Comparing performance of sequential and parallel GPU algorithms}
 \end{figure}
-Similar to the previous plot, we can see that our implementation of the given CPU algorithm to run parallely on the GPU is much faster than the sequential algorithms on the GPU. This gives us an inclination that our implementation is correct and gives a speedup over the sequential algorithm when executed on the same hardware (GPU in our test machine in this case)\footnote{We used an Nvidia GeForce 1070 Max Q for our tests}.
+Similar to the previous plot, we can see that our parallelized GPU implementation is much faster than the implementation of our sequential algorithms on the GPU. This gives us an indication that our parallel implementation is correct and gives a clear speedup over the sequential algorithm when executed on the same hardware (GPU of our test machine in this case)\footnote{We used an Nvidia GeForce 1070 Max Q GPU for our tests}.
 
 \begin{figure}[H]
 \hfill\includegraphics[scale=0.5]{Graphics/gpuvcpu.png}\hspace*{\fill}
@@ -181,5 +211,8 @@ This is the most important result of the evaluation task. Here, we can clearly v
 \section{Appendix}
 We have only demonstrated the relevant CUDA kernels and not the surrounding code or main functions which are required to execute the kernels. The entire collection of complete code samples can be found in the GitHub repository.\par
 In our full sample code which we have used for benchmarking, we have used 2 header files which includes helper functions to facilitate CUDA error checking in our code - \textit{helper\_cuda.h} and \textit{helper\_string.h}. Both of these helper header files are included in the NVIDIA CUDA SDK under the \textit{samples/inc/} folder. In the Awkward Array production code we might use the same CUDA error checking header files or we might decide to write our own CUDA error checking code.
+
+\bibliographystyle{unsrt}
+\bibliography{report.bib}
 
 \end{document}
