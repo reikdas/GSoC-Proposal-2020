@@ -59,9 +59,17 @@ void foo(T* tooffsets, const C* fromstarts, const C* fromstops, int64_t startsof
   }
 }
 
+template <typename T>
+bool compare(T* arr1, T* arr2, int n) {
+  for (int i=0; i<n; i++) {
+    if (arr1[i] != arr2[i]) return false;
+  }
+  return true;
+}
+
 int main() {
-  int const size = 600000;
-  int starter[size], stopper[size], output[size + 1];
+  int const size = 60000;
+  int starter[size], stopper[size], output[size + 1], output2[size + 1];
   for (int i = 0; i < size; i++) {
     starter[i] = i;
     stopper[i] = i + 1;
@@ -75,9 +83,15 @@ int main() {
   auto time1 = std::chrono::duration_cast<std::chrono::microseconds>(stop1 - start1);
   std::cout << "Time taken for GPU = " << time1.count() << "\n";
   auto start2 = std::chrono::high_resolution_clock::now();
-  foo<int, int>(output, starter, stopper, 0, 0, size);
+  foo<int, int>(output2, starter, stopper, 0, 0, size);
   auto stop2 = std::chrono::high_resolution_clock::now();
   auto time2 = std::chrono::duration_cast<std::chrono::microseconds>(stop2 - start2);
   std::cout << "Time taken for CPU = " << time2.count() << "\n";
+  for (int i=0; i<size; i++) {
+    if (output2[i] != output[i]) {
+      std::cout << "FALSE" << std::endl;
+      return 0;
+    }
+  }
   return 0;
 }
