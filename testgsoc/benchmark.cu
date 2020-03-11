@@ -1,7 +1,6 @@
 #include <iostream>
 #include <fstream>
-#include <thrust/device_vector.h>
-#include <thrust/scan.h>
+#include <thrust/device_vector.h> #include <thrust/scan.h>
 #include <cuda_runtime.h>
 #include "device_launch_parameters.h"
 #include <assert.h>
@@ -177,7 +176,7 @@ int main() {
   // -----------------------------------------------------------
   std::ofstream outfile;
   outfile.open("data.txt");
-  for (int counter=10; counter<600000; counter=counter*3) {
+  for (int counter=10; counter<600000; counter+=1000) {
     const int size = counter;
     std::cout << "Benchmark for array of size " << counter << "\n";
     outfile << counter;
