@@ -1,6 +1,5 @@
 \documentclass{article}
 
-\usepackage{listings}
 \usepackage{minted}
 \usepackage{titlesec}
 \usepackage{graphicx}
@@ -40,14 +39,29 @@
 \section{Introduction}
 
 The sample CPU kernel (directly taken from the Awkward Array codebase) to be translated is defined below -
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\lstinputlisting[breaklines]{Code/cpukernel.c}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
+template <typename C, typename T>
+ERROR awkward_listarray_compact_offsets(T* tooffsets, const C* fromstarts, const C* fromstops, 
+          int64_t startsoffset, int64_t stopsoffset, int64_t length) {
+  tooffsets[0] = 0;
+  for (int64_t i = 0;  i < length;  i++) {
+    C start = fromstarts[startsoffset + i];
+    C stop = fromstops[stopsoffset + i];
+    if (stop < start) {
+      return failure("stops[i] < starts[i]", i, kSliceNone);
+    }
+    tooffsets[i + 1] = tooffsets[i] + (stop - start);
+  }
+  return success();
+}
+\end{minted}
 \end{mdframed}
 Translating this particular CPU kernel serves as a good test because parallelizing this CPU kernel involves overcoming the loop carried dependency in the above code -
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\begin{lstlisting}
+\begin{minted}{c}
 tooffsets[i + 1] = tooffsets[i] + (stop - start);
-\end{lstlisting}
+\end{minted}
 \end{mdframed}
 where \mintinline{c}{tooffsets[i + 1]} depends on \mintinline{c}{toffsets[i]}.\\
 
@@ -77,22 +91,67 @@ Due to the availability of an NVIDIA GPU and performance requirements, we have d
 \includegraphics[width=\textwidth]{Graphics/naivesingle.PNG}
 \caption{Visualizing GPU threads at work}
 \end{figure}
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\lstinputlisting[breaklines]{Code/naivesinglefunc.cu}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
+__device__
+void success_cuda(Error* err) {
+  err.str = nullptr;
+  err.identity = kSliceNone;
+  err.attempt = kSliceNone;
+  err.extra = 0;
+}
+
+__device__
+void failure_cuda(const char* str, int64_t identity, int64_t attempt, Error* err) {
+  err.str = str;
+  err.identity = identity;
+  err.attempt = attempt;
+  err.extra = 0;
+}
+
+template <typename C, typename T>
+__global__
+void awkward_listarray_compact_offsets(T* tooffsets, const C* fromstarts, const C* fromstops, 
+        int64_t startsoffset, int64_t stopsoffset, int64_t length, Error* err) {
+  __shared__ int flag[1];
+  int idx = threadIdx.x + (blockIdx.x * blockDim.x);
+  if (idx == 0) {
+    tooffsets[0] = 0;
+    flag[0] = 0;
+  }
+  if (idx < length) {
+    if (idx == 0) {
+      for (int i = 0; i < length; i++) {
+        C start = fromstarts[startsoffset + i];
+        C stop = fromstops[stopsoffset + i];
+        if (stop < start) {
+          failure_cuda("stops[i] < starts[i]", i, kSliceNone, err);
+          flag[0] = 1;
+        }
+        tooffsets[i + 1] = tooffsets[i] + (stop - start);
+      }
+    }
+  }
+  __syncthreads();
+  if (flag[0] != 1) {
+    success_cuda(err);
+  }
+}
+\end{minted}
 \end{mdframed}
 In the above code block\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/naivesingle.cu}} we execute the algorithm only for a single GPU thread (in a for loop) while the other threads sit idle.
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\begin{lstlisting}
+\begin{minted}{c}
     if (idx == 0) {
         ...
     }
-\end{lstlisting}
+\end{minted}
 \end{mdframed}
 where the variable \mintinline{c}{idx} is the thread index.\\
 \\
 Since CUDA GPU kernels have to be of the return type void, we use additional device functions, \mintinline{c}{success_cuda} and \mintinline{c}{failure_cuda} to record whether the kernel behaved as expected.\\
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\begin{lstlisting}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
 __device__
 void success_cuda(Error* err) {
   err.str = nullptr;
@@ -109,18 +168,18 @@ void failure_cuda(const char* str, int64_t identity,
   err.attempt = attempt;
   err.extra = 0;
 }
-\end{lstlisting}
+\end{minted}
 \end{mdframed}
 We use a flag which has been implemented using shared memory and the CUDA intrinsic thread synchronization 
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\begin{lstlisting}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
     __shared__ int flag[1];
     ...
     __syncthreads();
     if (flag[0] != 1) {
         ...
     }
-\end{lstlisting}
+\end{minted}
 \end{mdframed}
 to determine whether the \mintinline{c}{success_cuda()} call should be executed once the \mintinline{c}{failure_cuda()} call has already been reached by one of the GPU threads.
 
@@ -130,21 +189,68 @@ to determine whether the \mintinline{c}{success_cuda()} call should be executed 
 \includegraphics[width=\textwidth]{Graphics/naivemulti.PNG}
 \caption{Visualizing GPU threads at work}
 \end{figure}
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\lstinputlisting[breaklines]{Code/naivemultifunc.cu}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
+__device__
+void success_cuda(Error* err) {
+  err.str = nullptr;
+  err.identity = kSliceNone;
+  err.attempt = kSliceNone;
+  err.extra = 0;
+}
+
+__device__
+void failure_cuda(const char* str, int64_t identity, int64_t attempt, Error* err) {
+  err.str = str;
+  err.identity = identity;
+  err.attempt = attempt;
+  err.extra = 0;
+}
+
+template <typename C, typename T>
+__global__
+void awkward_listarray_compact_offsets(T* tooffsets, const C* fromstarts, const C* fromstops, 
+        int64_t startsoffset, int64_t stopsoffset, int64_t length, Error* err) {
+  __shared__ int flag[1];
+  int idx = threadIdx.x + (blockIdx.x * blockDim.x);
+  if (idx < length) {
+    if (idx == 0) {
+      tooffsets[0] = 0;
+      flag[0] = 0;
+    }
+    for (int i = 0; i < length; i++) {
+      __syncthreads();
+      if (i == idx) {
+        C start = fromstarts[startsoffset + i];
+        C stop = fromstops[stopsoffset + i];
+        if (stop < start) {
+          failure_cuda("stops[i] < starts[i]", i, kSliceNone, err);
+          flag[0] = 1;
+        }
+        tooffsets[i + 1] = tooffsets[i] + (stop - start);
+      }
+    }
+  }
+  __syncthreads();
+  if (flag[0] != 1) {
+    success_cuda(err);
+  }
+}
+
+\end{minted}
 \end{mdframed}
 The sequential algorithm on multiple GPU threads implementation shown above\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/naivemultiblocks.cu}} differs only slightly from the sequential algorithm on a single GPU thread implementation.
 \smallbreak
 \noindent The main difference is that the multiple GPU threads implementation has all the threads execute the algorithm one after another (no loops), instead of all at the same time. When one thread is being executed, the other threads sit idly, then the next thread is executed while the previous and all other threads sit idle.
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\begin{lstlisting}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
     for (int i = 0; i < length; i++) {
       ...
       if (i == idx) {
         ... 
         }
     }
-\end{lstlisting}
+\end{minted}
 \end{mdframed}
 We use the CUDA intrinsic \mintinline{c}{__syncthreads()} before each iteration of the loop to ensure that all the threads are at the same position and ready to be executed before each thread is executed.
 
@@ -154,25 +260,98 @@ We use the CUDA intrinsic \mintinline{c}{__syncthreads()} before each iteration 
 \hfill\includegraphics[scale=0.72]{Graphics/gpu.PNG}\hspace*{\fill}
 \caption{Visualizing GPU threads at work}
 \end{figure}
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\lstinputlisting[breaklines]{Code/thrustfunc.cu}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
+#include <thrust/device_vector.h>
+#include <thrust/scan.h>
+#include "helper_cuda.h"
+
+__device__
+void success_cuda(Error* err) {
+  err.str = nullptr;
+  err.identity = kSliceNone;
+  err.attempt = kSliceNone;
+  err.extra = 0;
+}
+
+__device__
+void failure_cuda(const char* str, int64_t identity, int64_t attempt, Error* err) {
+  err.str = str;
+  err.identity = identity;
+  err.attempt = attempt;
+  err.extra = 0;
+}
+
+template <typename T, typename C>
+__global__
+void sub(T* output, const C* starter, const C* stopper, int64_t startsoffset, 
+        int64_t stopsoffset, int64_t n, Error* err) {
+  __shared__ int flag[1];
+  int thid = threadIdx.x + blockIdx.x * blockDim.x;
+  if (thid == 0) flag[0] = 0;
+  if (thid < n) {
+    C start = starter[thid + startsoffset];
+    C stop = stopper[thid + stopsoffset];
+    if (stop < start) {
+      failure_cuda("stops[i] < starts[i]", thid , kSliceNone, err);
+      flag[0] = 1;
+    }
+    output[thid] = stop - start;
+  }
+  __syncthreads();
+  if (flag[0] != 1) {
+    success_cuda(err);
+  }
+}
+
+template <typename T, typename C>
+void prefix_sum(T* output, const C* arr, const C* arr2, int64_t startsoffset, 
+        int64_t stopsoffset, int64_t length, Error* err) {
+  int block, thread;
+  if (length > 1024) {
+    block = (length / 1024) + 1;
+    thread = 1024;
+  }
+  else {
+    thread = length;
+    block = 1;
+  }
+  T* d_output;
+  C* d_arr, * d_arr2;
+  checkCudaErrors(cudaMalloc((void**)&d_output, length * sizeof(T)));
+  checkCudaErrors(cudaMalloc((void**)&d_arr, length * sizeof(C)));
+  checkCudaErrors(cudaMemcpy(d_arr, arr, length * sizeof(C), cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMalloc((void**)&d_arr2, length * sizeof(C)));
+  checkCudaErrors(cudaMemcpy(d_arr2, arr2, length * sizeof(C), cudaMemcpyHostToDevice));
+  sub<T, C><<<block, thread>>>(d_output, d_arr, d_arr2, startsoffset, stopsoffset, length, err);
+  checkCudaErrors(cudaDeviceSynchronize());
+  thrust::device_vector<T> data(d_output, d_output+length);
+  thrust::device_vector<T> temp(data.size() + 1);
+  thrust::exclusive_scan(data.begin(), data.end(), temp.begin());
+  temp[data.size()] = data.back() + temp[data.size() - 1];
+  thrust::copy(temp.begin(), temp.end(), output);
+  checkCudaErrors(cudaFree(d_output));
+  checkCudaErrors(cudaFree(d_arr));
+  checkCudaErrors(cudaFree(d_arr2));
+}
+\end{minted}
 \end{mdframed}
 The above code\footnote{Full benchmarking code: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/thrust.cu}} is the final resulting code for the evaluation task. We implement the given CPU algorithm as a parallel GPU algorithm using CUDA.\\
 \noindent The CUDA kernel \mintinline{c}{sub} takes two arrays that reside on the GPU and returns a GPU array which stores the result of subtracting the value of the array at the position (indices + offset). We call \mintinline{c}{sub} from the function \mintinline{c}{prefix_sum} which also calls Thrust's exclusive scan \cite{scan} algorithm on the resulting device array to get the required result.
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\begin{lstlisting}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
     thrust::exclusive_scan(data.begin(), data.end(), temp.begin());
-\end{lstlisting}
+\end{minted}
 \end{mdframed}
 and since the problem in question is not exactly an exclusive scan where the last cumulative sum number is not calculated, we need an additional step to calculate the required result -
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\begin{lstlisting}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
     temp[data.size()] = data.back() + temp[data.size() - 1];
-\end{lstlisting}
+\end{minted}
 \end{mdframed}
 \noindent We calculate the number of blocks and threads required by the \mintinline{c}{sub} CUDA kernel by - 
-\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=1,innerbottommargin=1, outerlinewidth=1, linecolor=light-gray]
-\begin{lstlisting}
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
     if (length > 1024) {
         block = (length / 1024) + 1;
         thread = 1024;
@@ -181,7 +360,7 @@ and since the problem in question is not exactly an exclusive scan where the las
         thread = length;
         block = 1;
     }
-\end{lstlisting}
+\end{minted}
 \end{mdframed}
 The prefix\_sum() function also has a lot of boilerplate code such as copying arrays from CPU to GPU, and back from the GPU to CPU whose execution time we do not take into consideration while benchmarking.\\
 \smallbreak
