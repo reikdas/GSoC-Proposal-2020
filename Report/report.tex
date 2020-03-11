@@ -366,6 +366,10 @@ The prefix\_sum() function also has a lot of boilerplate code such as copying ar
 \smallbreak
 \noindent Arguably CUB's \cite{cub} exclusive scan algorithm is more optimized than Thrust's exclusive scan algorithm, but since Thrust comes installed with the CUDA development toolkit, we have decided to use Thrust in our sample code.
 
+\section{Verifying results}
+It is important to verify the results, especially in the case of the GPU implementations because of race conditions at the CUDA block boundaries. CUDA blocks cannot communicate with each other without the use of CUDA's cooperative groups that have been introduced since CUDA 9.\par
+The GPU and CPU results have been verified by checking the results for small arrays (size < 100) by eye. The results of larger arrays have been verified by using a for loop(we do not care about speed during verification) to iterate over and compare the resulting arrays of the CPU and GPU implementations.\footnote{\url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/thrustcputime.cu#L90}}
+
 \pagebreak
 \section{Benchmarks}
 We have compared the performance of the various algorithms relative to each other\footnote{Benchmarking numbers: \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/data.txt} generated using \url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/plotter.py}}.
