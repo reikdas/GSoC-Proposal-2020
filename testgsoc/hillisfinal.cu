@@ -2,40 +2,54 @@
 #include "device_launch_parameters.h"
 #include <iostream>
 
+// https://stackoverflow.com/a/14038590/4647107
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+  if (code != cudaSuccess)
+  {
+    fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+    if (abort) exit(code);
+  }
+}
+
 template <typename T, typename C>
 __global__
-void awkward_listarray_compact_offsets(T* tooffsets, const C* fromstarts, const C* fromstops, int64_t startsoffset, int64_t stopsoffset, int64_t length, T* sums) {
+void prefix_sum1(T* base, const C* basestart, const C* basestop, int64_t basestartoffset, int64_t basestopoffset, int length, T* sums) {
   int thid = threadIdx.x + (blockIdx.x * blockDim.x);
   extern __shared__ T temp[];
   int pout = 0, pin = 1;
   if (thid < length) {
-    temp[thid] = fromstops[stopsoffset + thid] - fromstarts[startsoffset + thid];
+    temp[threadIdx.x] = basestop[basestopoffset + thid] - basestart[basestartoffset + thid];
     __syncthreads();
-    for (int offset = 1; offset < length; offset *=2) {
+    for (int offset = 1; offset < 1024; offset *=2) {
       pout = 1 - pout;
       pin = 1 - pout;
-      if (thid >= offset)
-        temp[pout*length + thid] = temp[pin*length + thid - offset] + temp[pin*length + thid];
-      else
-        temp[pout*length + thid] = temp[pin*length + thid];
+      if (threadIdx.x >= offset) {
+        temp[pout*1024 + threadIdx.x] = temp[pin*1024 + threadIdx.x - offset] + temp[pin*1024 + threadIdx.x];
+      }
+      else {
+        temp[pout*1024 + threadIdx.x] = temp[pin*1024 + threadIdx.x];
+      }
       __syncthreads();
     }
-    tooffsets[thid] = temp[pout*length + thid];
+    base[thid] = temp[pout*1024 + threadIdx.x];
     __syncthreads();
     if ((thid == 1023) || ((blockIdx.x != 0) && (thid == ((1024 * (blockIdx.x + 1))-1))) || (thid == length-1)) {
-        sums[blockIdx.x] = tooffsets[thid];
+        sums[blockIdx.x] = base[thid];
     }
   }
 }
 
+// Need another kernel because of conditional __syncthreads()
 template <typename T>
 __global__
-void prefix_sum(T* tooffsets, int length) {
+void prefix_sum2(T* base, int length) {
   int thid = threadIdx.x + (blockIdx.x * blockDim.x);
   extern __shared__ T temp[];
   int pout = 0, pin = 1;
   if (thid < length) {
-    temp[thid] = tooffsets[thid];
+    temp[thid] = base[thid];
     __syncthreads();
     for (int offset = 1; offset < length; offset *=2) {
       pout = 1 - pout;
@@ -46,61 +60,78 @@ void prefix_sum(T* tooffsets, int length) {
         temp[pout*length + thid] = temp[pin*length + thid];
       __syncthreads();
     }
-    tooffsets[thid] = temp[pout*length + thid];
+    base[thid] = temp[pout*length + thid];
   }
 }
 
 template<typename T>
 __global__
-void adder(T* tooffsets, T* sums, int64_t length) {
+void adder(T* base, T* sums, int64_t length) {
   int thid = threadIdx.x + (blockIdx.x * blockDim.x);
   if (blockIdx.x != 0 && thid < length)
-    tooffsets[thid] += sums[blockIdx.x - 1];
+    base[thid] += sums[blockIdx.x - 1];
 }
 
 template <typename T, typename C>
-void offload(T* tooffsets, const C* fromstarts, const C* fromstops, int64_t startsoffset, int64_t stopsoffset, int64_t length) {
-  T* d_tooffsets, * d_sums;
-  C* d_fromstarts, * d_fromstops;
-  cudaMalloc((void**)&d_tooffsets, (length+1) * sizeof(T));
-  cudaMalloc((void**)&d_fromstarts, length * sizeof(C));
-  cudaMemcpy(d_fromstarts, fromstarts, length * sizeof(C), cudaMemcpyHostToDevice);
-  cudaMalloc((void**)&d_fromstops, length * sizeof(C));
-  cudaMemcpy(d_fromstops, fromstops, length * sizeof(C), cudaMemcpyHostToDevice);
-  int block, thread;
+void offload(T* base, C* basestart1, C* basestop1, int64_t basestartoffset, int64_t basestopoffset, int64_t length) {
+  int block, thread=1024;
   if (length > 1024) {
-    block = (length / 1024) + 1;
-    thread = 1024;
+    if (length%1024 != 0)
+      block = (length / 1024) + 1;
+    else
+      block = length/1024;
   }
   else {
-    thread = length;
     block = 1;
   }
-  cudaMalloc((void**)&d_sums, block*sizeof(T));
-  awkward_listarray_compact_offsets<T, C><<<block, thread, length*2*sizeof(T)>>>(d_tooffsets, d_fromstarts, d_fromstops, startsoffset, stopsoffset, length, d_sums);
-  cudaDeviceSynchronize();
-  prefix_sum<T><<<1, block, block*2*sizeof(T)>>>(d_sums, block);
-  cudaDeviceSynchronize();
-  adder<T><<<block, thread>>>(d_tooffsets, d_sums, length);
-  cudaDeviceSynchronize();
-  cudaMemcpy(tooffsets, d_tooffsets, (length + 1) * sizeof(T), cudaMemcpyDeviceToHost);
-  tooffsets[length] = tooffsets[length - 1] + fromstops[length - 1 + stopsoffset] - fromstarts[length - 1 + startsoffset];
-  cudaFree(d_tooffsets);
-  cudaFree(d_fromstarts);
-  cudaFree(d_fromstops);
-  cudaFree(d_sums);
+  int modlength = block*thread;
+  // Padding the input arrays
+  C basestart[modlength], basestop[modlength];
+  for (int i=0; i<modlength; i++) {
+    if (i<length){
+      basestart[i] = basestart1[i];
+      basestop[i] = basestop1[i];
+    }
+    else {
+      basestart[i] = 0;
+      basestop[i] = 0;
+    }
+  }
+  T* d_tooffsets, * d_sums;
+  C* d_fromstarts, * d_fromstops;
+  gpuErrchk(cudaMalloc((void**)&d_tooffsets, (modlength+1) * sizeof(T)));
+  gpuErrchk(cudaMalloc((void**)&d_fromstarts, modlength * sizeof(C)));
+  gpuErrchk(cudaMemcpy(d_fromstarts, basestart, modlength * sizeof(C), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void**)&d_fromstops, modlength * sizeof(C)));
+  gpuErrchk(cudaMemcpy(d_fromstops, basestop, modlength * sizeof(C), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void**)&d_sums, block*sizeof(T)));
+  prefix_sum1<T, C><<<block, thread, thread*2*sizeof(T)>>>(d_tooffsets, d_fromstarts, d_fromstops, basestartoffset, basestopoffset, modlength, d_sums);
+  gpuErrchk(cudaPeekAtLastError());
+  gpuErrchk(cudaDeviceSynchronize());
+  prefix_sum2<T><<<1, block, block*2*sizeof(T)>>>(d_sums, block);
+  gpuErrchk(cudaPeekAtLastError());
+  gpuErrchk(cudaDeviceSynchronize());
+  adder<T><<<block, thread>>>(d_tooffsets, d_sums, modlength);
+  gpuErrchk(cudaPeekAtLastError());
+  gpuErrchk(cudaDeviceSynchronize());
+  gpuErrchk(cudaMemcpy(base, d_tooffsets, (length + 1) * sizeof(T), cudaMemcpyDeviceToHost));
+  base[length] = base[length - 1] + basestop[length - 1 + basestopoffset] - basestart[length - 1 + basestartoffset];
+  gpuErrchk(cudaFree(d_tooffsets));
+  gpuErrchk(cudaFree(d_fromstarts));
+  gpuErrchk(cudaFree(d_fromstops));
+  gpuErrchk(cudaFree(d_sums));
 }
 
 int main() {
-  const int size = 6000;
-  int tooffsets[size + 1], fromstarts[size], fromstops[size];
+  const int size = 400000;
+  int base[size + 1], basestart[size], basestop[size];
   for (int i = 0; i < size; i++) {
-    fromstarts[i] = i;
-    fromstops[i] = i + 10;
+    basestart[i] = i;
+    basestop[i] = i + 10;
   }
-  offload<int, int>(tooffsets, fromstarts, fromstops, 0, 0, size);
+  offload<int, int>(base, basestart, basestop, 0, 0, size);
   for (int i = 0; i < size + 1; i++) {
-	  std::cout << tooffsets[i] << "\n";
+      std::cout << base[i] << "\n";
   }
   return 0;
 }
