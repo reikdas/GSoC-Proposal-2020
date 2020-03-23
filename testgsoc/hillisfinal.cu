@@ -20,7 +20,12 @@ void prefix_sum1(T* base, const C* basestart, const C* basestop, int64_t basesta
   extern __shared__ T temp[];
   int pout = 0, pin = 1;
   if (thid < length) {
-    temp[threadIdx.x] = basestop[basestopoffset + thid] - basestart[basestartoffset + thid];
+    if (thid == 0) {
+      temp[threadIdx.x] = 0;
+    }
+    else {
+      temp[threadIdx.x] = basestop[basestopoffset + thid - 1] - basestart[basestartoffset + thid - 1];
+    }
     __syncthreads();
     for (int offset = 1; offset < 1024; offset *=2) {
       pout = 1 - pout;
