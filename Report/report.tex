@@ -260,6 +260,7 @@ We use the CUDA intrinsic \mintinline{c}{__syncthreads()} before each iteration 
 \hfill\includegraphics[scale=0.72]{Graphics/gpu.PNG}\hspace*{\fill}
 \caption{Visualizing GPU threads at work}
 \end{figure}
+\subsection{Using Thrust}
 \begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
 \begin{minted}{c}
 #include <thrust/device_vector.h>
@@ -366,6 +367,193 @@ The prefix\_sum() function also has a lot of boilerplate code such as copying ar
 \smallbreak
 \noindent Arguably CUB's \cite{cub} exclusive scan algorithm is more optimized than Thrust's exclusive scan algorithm, but since Thrust comes installed with the CUDA development toolkit, we have decided to use Thrust in our sample code.
 
+\subsection{Implementing by hand}
+
+Instead of using a library (for eg. Thrust) which comes with a prefix sum algorithm, in this example we implement a Hillis Steele algorithm ourselves - 
+
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
+#include <cuda_runtime.h>
+#include "device_launch_parameters.h"
+#include <iostream>
+
+// https://stackoverflow.com/a/14038590/4647107
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+  if (code != cudaSuccess)
+  {
+    fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+    if (abort) exit(code);
+  }
+}
+
+template <typename T, typename C>
+__global__
+void prefix_sum1(T* base, const C* basestart, const C* basestop, int64_t basestartoffset,
+                 int64_t basestopoffset, int length, T* sums) {
+  int thid = threadIdx.x + (blockIdx.x * blockDim.x);
+  extern __shared__ T temp[];
+  int pout = 0, pin = 1;
+  if (thid < length) {
+    if (thid == 0) {
+      temp[threadIdx.x] = 0;
+    }
+    else {
+      temp[threadIdx.x] = basestop[basestopoffset + thid - 1] - 
+                          basestart[basestartoffset + thid - 1];
+    }
+    __syncthreads();
+    for (int offset = 1; offset < 1024; offset *=2) {
+      pout = 1 - pout;
+      pin = 1 - pout;
+      if (threadIdx.x >= offset) {
+        temp[pout*1024 + threadIdx.x] = temp[pin*1024 + threadIdx.x - offset] + 
+                                        temp[pin*1024 + threadIdx.x];
+      }
+      else {
+        temp[pout*1024 + threadIdx.x] = temp[pin*1024 + threadIdx.x];
+      }
+      __syncthreads();
+    }
+    base[thid] = temp[pout*1024 + threadIdx.x];
+    __syncthreads();
+    if ((thid == 1023) || ((blockIdx.x != 0) && (thid == ((1024 * (blockIdx.x + 1))-1))) || 
+        (thid == length-1)) {
+        sums[blockIdx.x] = base[thid];
+    }
+  }
+}
+
+// Need another kernel because of conditional __syncthreads()
+template <typename T>
+__global__
+void prefix_sum2(T* base, int length) {
+  int thid = threadIdx.x + (blockIdx.x * blockDim.x);
+  extern __shared__ T temp[];
+  int pout = 0, pin = 1;
+  if (thid < length) {
+    temp[thid] = base[thid];
+    __syncthreads();
+    for (int offset = 1; offset < length; offset *=2) {
+      pout = 1 - pout;
+      pin = 1 - pout;
+      if (thid >= offset)
+        temp[pout*length + thid] = temp[pin*length + thid - offset] + temp[pin*length + thid];
+      else
+        temp[pout*length + thid] = temp[pin*length + thid];
+      __syncthreads();
+    }
+    base[thid] = temp[pout*length + thid];
+  }
+}
+
+template<typename T>
+__global__
+void adder(T* base, T* sums, int64_t length) {
+  int thid = threadIdx.x + (blockIdx.x * blockDim.x);
+  if (blockIdx.x != 0 && thid < length)
+    base[thid] += sums[blockIdx.x - 1];
+}
+
+template <typename T, typename C>
+void offload(T* base, C* basestart1, C* basestop1, int64_t basestartoffset, 
+             int64_t basestopoffset, int64_t length) {
+  int block, thread=1024;
+  if (length > 1024) {
+    if (length%1024 != 0)
+      block = (length / 1024) + 1;
+    else
+      block = length/1024;
+  }
+  else {
+    block = 1;
+  }
+  int modlength = block*thread;
+  // Padding the input arrays
+  C basestart[modlength], basestop[modlength];
+  for (int i=0; i<modlength; i++) {
+    if (i<length){
+      basestart[i] = basestart1[i];
+      basestop[i] = basestop1[i];
+    }
+    else {
+      basestart[i] = 0;
+      basestop[i] = 0;
+    }
+  }
+  T* d_tooffsets, * d_sums;
+  C* d_fromstarts, * d_fromstops;
+  gpuErrchk(cudaMalloc((void**)&d_tooffsets, (modlength+1) * sizeof(T)));
+  gpuErrchk(cudaMalloc((void**)&d_fromstarts, modlength * sizeof(C)));
+  gpuErrchk(cudaMemcpy(d_fromstarts, basestart, modlength * sizeof(C), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void**)&d_fromstops, modlength * sizeof(C)));
+  gpuErrchk(cudaMemcpy(d_fromstops, basestop, modlength * sizeof(C), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void**)&d_sums, block*sizeof(T)));
+  prefix_sum1<T, C><<<block, thread, thread*2*sizeof(T)>>>(d_tooffsets, d_fromstarts, 
+                     d_fromstops, basestartoffset, basestopoffset, modlength, d_sums);
+  gpuErrchk(cudaPeekAtLastError());
+  gpuErrchk(cudaDeviceSynchronize());
+  prefix_sum2<T><<<1, block, block*2*sizeof(T)>>>(d_sums, block);
+  gpuErrchk(cudaPeekAtLastError());
+  gpuErrchk(cudaDeviceSynchronize());
+  adder<T><<<block, thread>>>(d_tooffsets, d_sums, modlength);
+  gpuErrchk(cudaPeekAtLastError());
+  gpuErrchk(cudaDeviceSynchronize());
+  gpuErrchk(cudaMemcpy(base, d_tooffsets, (length + 1) * sizeof(T), cudaMemcpyDeviceToHost));
+  base[length] = base[length - 1] + basestop[length - 1 + basestopoffset] - 
+                 basestart[length - 1 + basestartoffset];
+  gpuErrchk(cudaFree(d_tooffsets));
+  gpuErrchk(cudaFree(d_fromstarts));
+  gpuErrchk(cudaFree(d_fromstops));
+  gpuErrchk(cudaFree(d_sums));
+}
+\end{minted}
+\end{mdframed}
+
+Examining the algorithm in the code display above, the main complexity of this algorithm is extending the algorithm for multiple blocks. This is why we had to implement another kernel to calculate the prefix sum of an array storing the element at the last index of each block.
+
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
+// Need another kernel because of conditional __syncthreads()
+template <typename T>
+__global__
+void prefix_sum2(T* base, int length) {
+  int thid = threadIdx.x + (blockIdx.x * blockDim.x);
+  extern __shared__ T temp[];
+  int pout = 0, pin = 1;
+  if (thid < length) {
+    temp[thid] = base[thid];
+    __syncthreads();
+    for (int offset = 1; offset < length; offset *=2) {
+      pout = 1 - pout;
+      pin = 1 - pout;
+      if (thid >= offset)
+        temp[pout*length + thid] = temp[pin*length + thid - offset] + temp[pin*length + thid];
+      else
+        temp[pout*length + thid] = temp[pin*length + thid];
+      __syncthreads();
+    }
+    base[thid] = temp[pout*length + thid];
+  }
+}
+\end{minted}
+\end{mdframed}
+
+and then add the calculated values to all the elements in the next block - 
+
+\begin{mdframed}[backgroundcolor=light-gray, roundcorner=10pt,leftmargin=0.5, rightmargin=0.5, innertopmargin=5,innerbottommargin=5, outerlinewidth=1, linecolor=light-gray]
+\begin{minted}{c}
+template<typename T>
+__global__
+void adder(T* base, T* sums, int64_t length) {
+  int thid = threadIdx.x + (blockIdx.x * blockDim.x);
+  if (blockIdx.x != 0 && thid < length)
+    base[thid] += sums[blockIdx.x - 1];
+}
+\end{minted}
+\end{mdframed}
+
 \section{Verifying results}
 It is important to verify the results, especially in the case of the GPU implementations because of race conditions at the CUDA block boundaries. CUDA blocks cannot communicate with each other without the use of CUDA's cooperative groups that have been introduced since CUDA 9.\par
 The GPU and CPU results have been verified by checking the results for small arrays (size < 100) by eye. The results of larger arrays have been verified by using a for loop(we do not care about speed during verification) to iterate over and compare the resulting arrays of the CPU and GPU implementations.\footnote{\url{https://github.com/reikdas/GSoC-Proposal-2020/blob/master/testgsoc/thrustcputime.cu#L90}}
@@ -390,6 +578,12 @@ Similar to the previous plot, we can see that our parallelized GPU implementatio
 \caption{Comparing parallelized GPU performance vs CPU performance}
 \end{figure}
 This is the most important result of the evaluation task. Here, we can clearly visualize that the parallel algorithm we designed to be executed on the GPU is much faster than the given sequential algorithm on the CPU.\footnote{There are some non-uniform anamolous spikes in all iterations of recorded data}
+
+\begin{figure}[H]
+\hfill\includegraphics[scale=0.5]{Graphics/thrusthillis.png}\hspace*{\fill}
+\caption{Comparing performance of Thrust vs algorithm implemented by hand}
+\end{figure}
+The above plot demonstrates that our hand written Hillis Steele algorithm is as fast as (if not faster) than the algorithm in the Thrust library. This is an important result because this means that we can extend our Hillis Steele implementation to multiple kernels with slight modifications.
 
 \section{Appendix}
 We have only demonstrated the relevant CUDA kernels and not the surrounding code or main functions which are required to execute the kernels. The entire collection of complete code samples can be found in the GitHub repository.\par
