@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
-#include <thrust/device_vector.h> #include <thrust/scan.h>
+#include <thrust/device_vector.h>
+#include <thrust/scan.h>
 #include <cuda_runtime.h>
 #include "device_launch_parameters.h"
 #include <assert.h>
@@ -164,6 +165,128 @@ void foo(T* tooffsets, const C* fromstarts, const C* fromstops, int64_t startsof
   }
 }
 
+// https://stackoverflow.com/a/14038590/4647107
+#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+  if (code != cudaSuccess)
+  {
+    fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+    if (abort) exit(code);
+  }
+}
+
+template <typename T, typename C>
+__global__
+void prefix_sum1(T* base, const C* basestart, const C* basestop, int64_t basestartoffset, int64_t basestopoffset, int length, T* sums) {
+  int thid = threadIdx.x + (blockIdx.x * blockDim.x);
+  extern __shared__ T temp[];
+  int pout = 0, pin = 1;
+  if (thid < length) {
+    temp[threadIdx.x] = basestop[basestopoffset + thid] - basestart[basestartoffset + thid];
+    __syncthreads();
+    for (int offset = 1; offset < 1024; offset *=2) {
+      pout = 1 - pout;
+      pin = 1 - pout;
+      if (threadIdx.x >= offset) {
+        temp[pout*1024 + threadIdx.x] = temp[pin*1024 + threadIdx.x - offset] + temp[pin*1024 + threadIdx.x];
+      }
+      else {
+        temp[pout*1024 + threadIdx.x] = temp[pin*1024 + threadIdx.x];
+      }
+      __syncthreads();
+    }
+    base[thid] = temp[pout*1024 + threadIdx.x];
+    __syncthreads();
+    if ((thid == 1023) || ((blockIdx.x != 0) && (thid == ((1024 * (blockIdx.x + 1))-1))) || (thid == length-1)) {
+        sums[blockIdx.x] = base[thid];
+    }
+  }
+}
+
+// Need another kernel because of conditional __syncthreads()
+template <typename T>
+__global__
+void prefix_sum2(T* base, int length) {
+  int thid = threadIdx.x + (blockIdx.x * blockDim.x);
+  extern __shared__ T temp[];
+  int pout = 0, pin = 1;
+  if (thid < length) {
+    temp[thid] = base[thid];
+    __syncthreads();
+    for (int offset = 1; offset < length; offset *=2) {
+      pout = 1 - pout;
+      pin = 1 - pout;
+      if (thid >= offset)
+        temp[pout*length + thid] = temp[pin*length + thid - offset] + temp[pin*length + thid];
+      else
+        temp[pout*length + thid] = temp[pin*length + thid];
+      __syncthreads();
+    }
+    base[thid] = temp[pout*length + thid];
+  }
+}
+
+template<typename T>
+__global__
+void adder(T* base, T* sums, int64_t length) {
+  int thid = threadIdx.x + (blockIdx.x * blockDim.x);
+  if (blockIdx.x != 0 && thid < length)
+    base[thid] += sums[blockIdx.x - 1];
+}
+
+template <typename T, typename C>
+int offload(T* base, C* basestart1, C* basestop1, int64_t basestartoffset, int64_t basestopoffset, int64_t length) {
+  int block, thread=1024;
+  if (length > 1024) {
+    if (length%1024 != 0)
+      block = (length / 1024) + 1;
+    else
+      block = length/1024;
+  }
+  else {
+    block = 1;
+  }
+  int modlength = block*thread;
+  // Padding the input arrays
+  C basestart[modlength], basestop[modlength];
+  for (int i=0; i<modlength; i++) {
+    if (i<length){
+      basestart[i] = basestart1[i];
+      basestop[i] = basestop1[i];
+    }
+    else {
+      basestart[i] = 0;
+      basestop[i] = 0;
+    }
+  }
+  T* d_tooffsets, * d_sums;
+  C* d_fromstarts, * d_fromstops;
+  gpuErrchk(cudaMalloc((void**)&d_tooffsets, (modlength+1) * sizeof(T)));
+  gpuErrchk(cudaMalloc((void**)&d_fromstarts, modlength * sizeof(C)));
+  gpuErrchk(cudaMemcpy(d_fromstarts, basestart, modlength * sizeof(C), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void**)&d_fromstops, modlength * sizeof(C)));
+  gpuErrchk(cudaMemcpy(d_fromstops, basestop, modlength * sizeof(C), cudaMemcpyHostToDevice));
+  gpuErrchk(cudaMalloc((void**)&d_sums, block*sizeof(T)));
+  auto start1 = std::chrono::high_resolution_clock::now();
+  prefix_sum1<T, C><<<block, thread, thread*2*sizeof(T)>>>(d_tooffsets, d_fromstarts, d_fromstops, basestartoffset, basestopoffset, modlength, d_sums);
+  cudaDeviceSynchronize();
+  prefix_sum2<T><<<1, block, block*2*sizeof(T)>>>(d_sums, block);
+  cudaDeviceSynchronize();
+  adder<T><<<block, thread>>>(d_tooffsets, d_sums, modlength);
+  cudaDeviceSynchronize();
+  auto stop1 = std::chrono::high_resolution_clock::now();
+  auto time1 = std::chrono::duration_cast<std::chrono::nanoseconds>(stop1 - start1);
+  gpuErrchk(cudaMemcpy(base, d_tooffsets, (length + 1) * sizeof(T), cudaMemcpyDeviceToHost));
+  base[length] = base[length - 1] + basestop[length - 1 + basestopoffset] - basestart[length - 1 + basestartoffset];
+  gpuErrchk(cudaFree(d_tooffsets));
+  gpuErrchk(cudaFree(d_fromstarts));
+  gpuErrchk(cudaFree(d_fromstops));
+  gpuErrchk(cudaFree(d_sums));
+  auto time = time1.count();
+  return (int)time;
+}
+
 int main() {
   // Warm up GPU
   const int t_size = 1024;
@@ -176,7 +299,7 @@ int main() {
   // -----------------------------------------------------------
   std::ofstream outfile;
   outfile.open("data.txt");
-  for (int counter=10; counter<600000; counter+=1000) {
+  for (int counter=10; counter<400000; counter+=1000) {
     const int size = counter;
     std::cout << "Benchmark for array of size " << counter << "\n";
     outfile << counter;
@@ -191,32 +314,14 @@ int main() {
      tot = tot + gpupar<int, int>(output, starter, stopper, 0, 0, size);
     }
     time = ((double)tot)/5;
-    std::cout << "Time taken for final GPU algo = " << std::fixed << std::setprecision(1) << time << "\n";
+    std::cout << "Time taken for final GPU Thrust algo = " << std::fixed << std::setprecision(1) << time << "\n";
     outfile << " " << std::fixed << std::setprecision(1) << time;
     tot = 0;
-    for (int i = 0; i < 5; i++) {
-      tot = tot + naivesingle<int, int>(output, starter, stopper, 0, 0, size);
+    for (int i=0; i<5; i++) {
+      tot = tot + offload<int, int>(output, starter, stopper, 0, 0, size);
     }
     time = ((double)tot)/5;
-    std::cout << "Time taken for naive sequential algo on GPU = " << std::fixed << std::setprecision(1) << time << "\n";
-    outfile << " " << std::fixed << std::setprecision(1) << time;
-    tot = 0;
-    for (int i = 0; i < 5; i++) {
-      tot = tot + naivemulti<int, int>(output, starter, stopper, 0, 0, size);
-    }
-    time = ((double)tot)/5;
-    std::cout << "Time taken for naive sequential algo parallely on GPU = " << std::fixed << std::setprecision(1) << time << "\n";
-    outfile << " " << std::fixed << std::setprecision(1) << time;
-    tot = 0;
-    for (int i = 0; i < 5; i++) {
-      auto start2 = std::chrono::high_resolution_clock::now();
-      foo<int, int>(output, starter, stopper, 0, 0, size);
-      auto stop2 = std::chrono::high_resolution_clock::now();
-      auto time2 = std::chrono::duration_cast<std::chrono::nanoseconds>(stop2 - start2);
-      tot += time2.count();
-    }
-    time = ((double)tot)/5;
-    std::cout << "Time taken for CPU = " << std::fixed << std::setprecision(1) << time << "\n";
+    std::cout << "Time taken for final Hillis Steele algo = " << std::fixed << std::setprecision(1) << time << "\n";
     outfile << " " << std::fixed << std::setprecision(1) << time << "\n";
   }
   return 0;
